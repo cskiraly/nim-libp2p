@@ -8,10 +8,7 @@
 # those terms.
 
 ## This module implements Public Key and Private Key interface for libp2p.
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 from strutils import split, strip, cmpIgnoreCase
 
@@ -68,11 +65,13 @@ when supported(PKScheme.Ed25519):
   import ed25519/ed25519
 when supported(PKScheme.Secp256k1):
   import secp
+when supported(PKScheme.ECDSA):
+  import ecnist
 
-# We are still importing `ecnist` because, it is used for SECIO handshake,
-# but it will be impossible to create ECNIST keys or import ECNIST keys.
+  # These used to be declared in `crypto` itself
+  export ecnist.ephemeral, ecnist.ECDHEScheme
 
-import ecnist, bearssl/rand, bearssl/hash as bhash
+import bearssl/rand, bearssl/hash as bhash
 import ../protobuf/minprotobuf, ../vbuffer, ../multihash, ../multicodec
 import nimcrypto/[rijndael, twofish, sha2, hash, hmac]
 # We use `ncrutils` for constant-time hexadecimal encoding/decoding procedures.
@@ -88,8 +87,6 @@ type
   DigestSheme* = enum
     Sha256,
     Sha512
-
-  ECDHEScheme* = EcCurveKind
 
   PublicKey* = object
     case scheme*: PKScheme
@@ -458,7 +455,8 @@ proc getBytes*(sig: Signature): seq[byte] =
   ## Return signature ``sig`` in binary form.
   result = sig.data
 
-proc init*[T: PrivateKey|PublicKey](key: var T, data: openArray[byte]): bool =
+template initImpl[T: PrivateKey|PublicKey](
+    key: var T, data: openArray[byte]): bool =
   ## Initialize private key ``key`` from libp2p's protobuf serialized raw
   ## binary form.
   ##
@@ -471,7 +469,7 @@ proc init*[T: PrivateKey|PublicKey](key: var T, data: openArray[byte]): bool =
     var pb = initProtoBuffer(@data)
     let r1 = pb.getField(1, id)
     let r2 = pb.getField(2, buffer)
-    if not(r1.isOk() and r1.get() and r2.isOk() and r2.get()):
+    if not(r1.get(false) and r2.get(false)):
       false
     else:
       if cast[int8](id) notin SupportedSchemesInt or len(buffer) <= 0:
@@ -519,6 +517,14 @@ proc init*[T: PrivateKey|PublicKey](key: var T, data: openArray[byte]): bool =
               false
           else:
             false
+
+{.push warning[ProveField]:off.}  # https://github.com/nim-lang/Nim/issues/22060
+proc init*(key: var PrivateKey, data: openArray[byte]): bool =
+  initImpl(key, data)
+
+proc init*(key: var PublicKey, data: openArray[byte]): bool =
+  initImpl(key, data)
+{.pop.}
 
 proc init*(sig: var Signature, data: openArray[byte]): bool =
   ## Initialize signature ``sig`` from raw binary form.
@@ -873,34 +879,6 @@ proc mac*(secret: Secret, id: int): seq[byte] {.inline.} =
   offset += secret.ivsize + secret.keysize
   copyMem(addr result[0], unsafeAddr secret.data[offset], secret.macsize)
 
-proc ephemeral*(
-    scheme: ECDHEScheme,
-    rng: var HmacDrbgContext): CryptoResult[EcKeyPair] =
-  ## Generate ephemeral keys used to perform ECDHE.
-  var keypair: EcKeyPair
-  if scheme == Secp256r1:
-    keypair = ? EcKeyPair.random(Secp256r1, rng).orError(KeyError)
-  elif scheme == Secp384r1:
-    keypair = ? EcKeyPair.random(Secp384r1, rng).orError(KeyError)
-  elif scheme == Secp521r1:
-    keypair = ? EcKeyPair.random(Secp521r1, rng).orError(KeyError)
-  ok(keypair)
-
-proc ephemeral*(
-    scheme: string, rng: var HmacDrbgContext): CryptoResult[EcKeyPair] =
-  ## Generate ephemeral keys used to perform ECDHE using string encoding.
-  ##
-  ## Currently supported encoding strings are P-256, P-384, P-521, if encoding
-  ## string is not supported P-521 key will be generated.
-  if scheme == "P-256":
-    ephemeral(Secp256r1, rng)
-  elif scheme == "P-384":
-    ephemeral(Secp384r1, rng)
-  elif scheme == "P-521":
-    ephemeral(Secp521r1, rng)
-  else:
-    ephemeral(Secp521r1, rng)
-
 proc getOrder*(remotePubkey, localNonce: openArray[byte],
                localPubkey, remoteNonce: openArray[byte]): CryptoResult[int] =
   ## Compare values and calculate `order` parameter.
@@ -976,9 +954,8 @@ proc decodeProposal*(message: seq[byte], nonce, pubkey: var seq[byte],
   let r4 = pb.getField(4, ciphers)
   let r5 = pb.getField(5, hashes)
 
-  r1.isOk() and r1.get() and r2.isOk() and r2.get() and
-  r3.isOk() and r3.get() and r4.isOk() and r4.get() and
-  r5.isOk() and r5.get()
+  r1.get(false) and r2.get(false) and r3.get(false) and
+  r4.get(false) and r5.get(false)
 
 proc createExchange*(epubkey, signature: openArray[byte]): seq[byte] =
   ## Create SecIO exchange message using ephemeral public key ``epubkey`` and
@@ -998,32 +975,32 @@ proc decodeExchange*(message: seq[byte],
   var pb = initProtoBuffer(message)
   let r1 = pb.getField(1, pubkey)
   let r2 = pb.getField(2, signature)
-  r1.isOk() and r1.get() and r2.isOk() and r2.get()
+  r1.get(false) and r2.get(false)
 
 ## Serialization/Deserialization helpers
 
 proc write*(vb: var VBuffer, pubkey: PublicKey) {.
-     inline, raises: [Defect, ResultError[CryptoError]].} =
+     inline, raises: [ResultError[CryptoError]].} =
   ## Write PublicKey value ``pubkey`` to buffer ``vb``.
   vb.writeSeq(pubkey.getBytes().tryGet())
 
 proc write*(vb: var VBuffer, seckey: PrivateKey) {.
-     inline, raises: [Defect, ResultError[CryptoError]].} =
+     inline, raises: [ResultError[CryptoError]].} =
   ## Write PrivateKey value ``seckey`` to buffer ``vb``.
   vb.writeSeq(seckey.getBytes().tryGet())
 
 proc write*(vb: var VBuffer, sig: PrivateKey) {.
-     inline, raises: [Defect, ResultError[CryptoError]].} =
+     inline, raises: [ResultError[CryptoError]].} =
   ## Write Signature value ``sig`` to buffer ``vb``.
   vb.writeSeq(sig.getBytes().tryGet())
 
 proc write*[T: PublicKey|PrivateKey](pb: var ProtoBuffer, field: int,
                                      key: T) {.
-     inline, raises: [Defect, ResultError[CryptoError]].} =
+     inline, raises: [ResultError[CryptoError]].} =
   write(pb, field, key.getBytes().tryGet())
 
 proc write*(pb: var ProtoBuffer, field: int, sig: Signature) {.
-     inline, raises: [Defect].} =
+     inline, raises: [].} =
   write(pb, field, sig.getBytes())
 
 proc getField*[T: PublicKey|PrivateKey](pb: ProtoBuffer, field: int,

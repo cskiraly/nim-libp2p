@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import chronos, chronicles, times, tables, sequtils
 import ../switch,
@@ -20,7 +17,7 @@ logScope:
   topics = "libp2p autorelay"
 
 type
-  OnReservationHandler = proc (addresses: seq[MultiAddress]) {.gcsafe, raises: [Defect].}
+  OnReservationHandler = proc (addresses: seq[MultiAddress]) {.gcsafe, raises: [].}
 
   AutoRelayService* = ref object of Service
     running: bool
@@ -34,6 +31,9 @@ type
     onReservation: OnReservationHandler
     addressMapper: AddressMapper
     rng: ref HmacDrbgContext
+
+proc isRunning*(self: AutoRelayService): bool =
+  return self.running
 
 proc addressMapper(
   self: AutoRelayService,

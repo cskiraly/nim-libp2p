@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import chronos
 import std/[options, tables, sets]
@@ -48,6 +45,7 @@ const
 
 const
   BackoffSlackTime* = 2 # seconds
+  PingsPeerBudget* = 100 # maximum of 6.4kb/heartbeat (6.4kb/s with default 1 second/hb)
   IHavePeerBudget* = 10
   # the max amount of IHave to expose, not by spec, but go as example
   # rust sigp: https://github.com/sigp/rust-libp2p/blob/f53d02bc873fef2bf52cd31e3d5ce366a41d8a8c/protocols/gossipsub/src/config.rs#L572
@@ -144,6 +142,11 @@ type
     disconnectBadPeers*: bool
     enablePX*: bool
 
+    bandwidthEstimatebps*: int # This is currently used only for limting flood publishing. 0 disables flood-limiting completely
+
+    overheadRateLimit*: Opt[tuple[bytes: int, interval: Duration]]
+    disconnectPeerAboveRateLimit*: bool
+
   BackoffTable* = Table[string, Table[PeerId, Moment]]
   ValidationSeenTable* = Table[MessageId, HashSet[PubSubPeer]]
 
@@ -152,13 +155,13 @@ type
     proc(peer: PeerId,
     tag: string, # For gossipsub, the topic
     peers: seq[RoutingRecordsPair])
-    {.gcsafe, raises: [Defect].}
+    {.gcsafe, raises: [].}
 
   GossipSub* = ref object of FloodSub
     mesh*: PeerTable                           # peers that we send messages to when we are subscribed to the topic
     fanout*: PeerTable                         # peers that we send messages to when we're not subscribed to the topic
     gossipsub*: PeerTable                      # peers that are subscribed to a topic
-    explicit*: PeerTable                       # directpeers that we keep alive explicitly
+    subscribedDirectPeers*: PeerTable          # directpeers that we keep alive
     backingOff*: BackoffTable                  # peers to backoff from when replenishing the mesh
     lastFanoutPubSub*: Table[string, Moment]   # last publish time for fanout topics
     gossip*: Table[string, seq[ControlIHave]]  # pending gossip

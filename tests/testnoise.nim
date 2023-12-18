@@ -38,10 +38,7 @@ const
 type
   TestProto = ref object of LPProtocol
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 method init(p: TestProto) {.gcsafe.} =
   proc handle(conn: Connection, proto: string) {.async, gcsafe.} =
@@ -75,7 +72,7 @@ proc createSwitch(ma: MultiAddress; outgoing: bool, secio: bool = false): (Switc
       [Secure(Noise.new(rng, privateKey, outgoing = outgoing))]
     connManager = ConnManager.new()
     ms = MultistreamSelect.new()
-    muxedUpgrade = MuxedUpgrade.new(muxers, secureManagers, connManager, ms)
+    muxedUpgrade = MuxedUpgrade.new(muxers, secureManagers, ms)
     transports = @[Transport(TcpTransport.new(upgrade = muxedUpgrade))]
 
   let switch = newSwitch(

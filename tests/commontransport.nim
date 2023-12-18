@@ -9,7 +9,7 @@ import ../libp2p/[stream/connection,
 
 import ./helpers
 
-type TransportProvider* = proc(): Transport {.gcsafe, raises: [Defect].}
+type TransportProvider* = proc(): Transport {.gcsafe, raises: [].}
 
 template commonTransportTest*(prov: TransportProvider, ma1: string, ma2: string = "") =
   block:
@@ -150,6 +150,7 @@ template commonTransportTest*(prov: TransportProvider, ma1: string, ma2: string 
       proc acceptHandler() {.async, gcsafe.} =
         while true:
           let conn = await transport1.accept()
+          await conn.write(newSeq[byte](0))
           await conn.write("Hello!")
           await conn.close()
 

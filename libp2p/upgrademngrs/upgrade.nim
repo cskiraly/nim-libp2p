@@ -8,10 +8,7 @@
 # those terms.
 
 {.push gcsafe.}
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[sequtils, strutils]
 import pkg/[chronos, chronicles, metrics]
@@ -38,7 +35,6 @@ type
 
   Upgrade* = ref object of RootObj
     ms*: MultistreamSelect
-    connManager*: ConnManager
     secureManagers*: seq[Secure]
 
 method upgrade*(

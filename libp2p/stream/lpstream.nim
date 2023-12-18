@@ -10,10 +10,7 @@
 ## Length Prefixed stream implementation
 
 {.push gcsafe.}
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/oids
 import stew/byteutils
@@ -279,7 +276,7 @@ proc readLp*(s: LPStream, maxSize: int): Future[seq[byte]] {.async, gcsafe, publ
   if length == 0:
     return
 
-  var res = newSeq[byte](length)
+  var res = newSeqUninitialized[byte](length)
   await s.readExactly(addr res[0], res.len)
   return res
 

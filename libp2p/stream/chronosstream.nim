@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[strformat]
 import stew/results
@@ -132,7 +129,9 @@ method write*(s: ChronosStream, msg: seq[byte]): Future[void] =
   # drives up memory usage
   if msg.len == 0:
     trace "Empty byte seq, nothing to write"
-    return
+    let fut = newFuture[void]("chronosstream.write.empty")
+    fut.complete()
+    return fut
   if s.closed:
     let fut = newFuture[void]("chronosstream.write.closed")
     fut.fail(newLPStreamClosedError())

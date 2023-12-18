@@ -9,10 +9,7 @@
 
 ## WebSocket & WebSocket Secure transport implementation
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[sequtils]
 import stew/results
@@ -111,7 +108,7 @@ type
     flags: set[ServerFlags]
     handshakeTimeout: Duration
     factories: seq[ExtFactory]
-    rng: Rng
+    rng: ref HmacDrbgContext
 
 proc secure*(self: WsTransport): bool =
   not (isNil(self.tlsPrivateKey) or isNil(self.tlsCertificate))
@@ -159,8 +156,12 @@ method start*(
 
     self.httpservers &= httpserver
 
-    let codec = if isWss:
-        MultiAddress.init("/wss")
+    let codec =
+      if isWss:
+        if ma.contains(multiCodec("tls")) == MaResult[bool].ok(true):
+          MultiAddress.init("/tls/ws")
+        else:
+          MultiAddress.init("/wss")
       else:
         MultiAddress.init("/ws")
 
@@ -267,8 +268,6 @@ method accept*(self: WsTransport): Future[Connection] {.async, gcsafe.} =
     except CatchableError as exc:
       await req.stream.closeWait()
       raise exc
-  except TransportOsError as exc:
-    debug "OS Error", exc = exc.msg
   except WebSocketError as exc:
     debug "Websocket Error", exc = exc.msg
   except HttpError as exc:
@@ -277,16 +276,19 @@ method accept*(self: WsTransport): Future[Connection] {.async, gcsafe.} =
     debug "AsyncStream Error", exc = exc.msg
   except TransportTooManyError as exc:
     debug "Too many files opened", exc = exc.msg
+  except TransportAbortedError as exc:
+    debug "Connection aborted", exc = exc.msg
   except AsyncTimeoutError as exc:
     debug "Timed out", exc = exc.msg
   except TransportUseClosedError as exc:
     debug "Server was closed", exc = exc.msg
     raise newTransportClosedError(exc)
   except CancelledError as exc:
-    # bubble up silently
     raise exc
+  except TransportOsError as exc:
+    debug "OS Error", exc = exc.msg
   except CatchableError as exc:
-    warn "Unexpected error accepting connection", exc = exc.msg
+    info "Unexpected error accepting connection", exc = exc.msg
     raise exc
 
 method dial*(
@@ -327,7 +329,7 @@ proc new*(
   tlsFlags: set[TLSFlags] = {},
   flags: set[ServerFlags] = {},
   factories: openArray[ExtFactory] = [],
-  rng: Rng = nil,
+  rng: ref HmacDrbgContext = nil,
   handshakeTimeout = DefaultHeadersTimeout): T {.public.} =
   ## Creates a secure WebSocket transport
 
@@ -346,7 +348,7 @@ proc new*(
   upgrade: Upgrade,
   flags: set[ServerFlags] = {},
   factories: openArray[ExtFactory] = [],
-  rng: Rng = nil,
+  rng: ref HmacDrbgContext = nil,
   handshakeTimeout = DefaultHeadersTimeout): T {.public.} =
   ## Creates a clear-text WebSocket transport
 

@@ -7,13 +7,10 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 {.push public.}
 
-import std/[options, sequtils]
+import std/sequtils
 import pkg/[chronos, chronicles, stew/results]
 import peerid, multiaddress, multicodec, crypto/crypto, routing_record, errors, utility
 
@@ -26,7 +23,7 @@ type
 
   AddressMapper* =
     proc(listenAddrs: seq[MultiAddress]): Future[seq[MultiAddress]]
-      {.gcsafe, raises: [Defect].}
+      {.gcsafe, raises: [].}
 
   PeerInfo* {.public.} = ref object
     peerId*: PeerId
@@ -56,15 +53,12 @@ proc update*(p: PeerInfo) {.async.} =
   for mapper in p.addressMappers:
     p.addrs = await mapper(p.addrs)
 
-  let sprRes = SignedPeerRecord.init(
+  p.signedPeerRecord = SignedPeerRecord.init(
     p.privateKey,
     PeerRecord.init(p.peerId, p.addrs)
-  )
-  if sprRes.isOk:
-    p.signedPeerRecord = sprRes.get()
-  else:
-    discard
-    #info "Can't update the signed peer record"
+  ).valueOr():
+    info "Can't update the signed peer record"
+    return
 
 proc addrs*(p: PeerInfo): seq[MultiAddress] =
   p.addrs
@@ -99,7 +93,7 @@ proc new*(
   agentVersion: string = "",
   addressMappers = newSeq[AddressMapper](),
   ): PeerInfo
-  {.raises: [Defect, LPError].} =
+  {.raises: [LPError].} =
 
   let pubkey = try:
       key.getPublicKey().tryGet()

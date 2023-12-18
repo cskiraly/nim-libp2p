@@ -7,13 +7,9 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
-import std/[options, sets, sequtils]
-
+import std/[sets, sequtils]
 import stew/[results, objects]
 import chronos, chronicles
 
@@ -75,8 +71,8 @@ proc new*(T: typedesc[Dcutr], switch: Switch, connectTimeout = 15.seconds, maxDi
       debug "Dcutr receiver could not connect to the remote peer, all connect attempts timed out", peerDialableAddrs, msg = err.msg
       raise newException(DcutrError, "Dcutr receiver could not connect to the remote peer, all connect attempts timed out", err)
     except CatchableError as err:
-      warn "Unexpected error in dcutr handler", msg = err.msg
-      raise newException(DcutrError, "Unexpected error in dcutr handler", err)
+      warn "Unexpected error when Dcutr receiver tried to connect to the remote peer", msg = err.msg
+      raise newException(DcutrError, "Unexpected error when Dcutr receiver tried to connect to the remote peer", err)
 
   let self = T()
   self.handler = handleStream

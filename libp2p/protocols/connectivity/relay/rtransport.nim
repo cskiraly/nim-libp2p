@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import sequtils, strutils
 
@@ -40,7 +37,7 @@ method start*(self: RelayTransport, ma: seq[MultiAddress]) {.async.} =
   self.client.onNewConnection = proc(
     conn: Connection,
     duration: uint32 = 0,
-    data: uint64 = 0) {.async, gcsafe, raises: [Defect].} =
+    data: uint64 = 0) {.async, gcsafe, raises: [].} =
       await self.queue.addLast(RelayConnection.new(conn, duration, data))
       await conn.join()
   self.selfRunning = true
@@ -64,9 +61,9 @@ proc dial*(self: RelayTransport, ma: MultiAddress): Future[Connection] {.async, 
   var
     relayPeerId: PeerId
     dstPeerId: PeerId
-  if not relayPeerId.init(($(sma[^3].get())).split('/')[2]):
+  if not relayPeerId.init(($(sma[^3].tryGet())).split('/')[2]):
     raise newException(RelayV2DialError, "Relay doesn't exist")
-  if not dstPeerId.init(($(sma[^1].get())).split('/')[2]):
+  if not dstPeerId.init(($(sma[^1].tryGet())).split('/')[2]):
     raise newException(RelayV2DialError, "Destination doesn't exist")
   trace "Dial", relayPeerId, dstPeerId
 
@@ -94,13 +91,17 @@ method dial*(
   hostname: string,
   ma: MultiAddress,
   peerId: Opt[PeerId] = Opt.none(PeerId)): Future[Connection] {.async, gcsafe.} =
-  let address = MultiAddress.init($ma & "/p2p/" & $peerId.get()).tryGet()
-  result = await self.dial(address)
+  peerId.withValue(pid):
+    let address = MultiAddress.init($ma & "/p2p/" & $pid).tryGet()
+    result = await self.dial(address)
 
-method handles*(self: RelayTransport, ma: MultiAddress): bool {.gcsafe} =
-  if ma.protocols.isOk():
-    let sma = toSeq(ma.items())
-    result = sma.len >= 2 and CircuitRelay.match(sma[^1].get())
+method handles*(self: RelayTransport, ma: MultiAddress): bool {.gcsafe.} =
+  try:
+    if ma.protocols.isOk():
+      let sma = toSeq(ma.items())
+      result = sma.len >= 2 and CircuitRelay.match(sma[^1].tryGet())
+  except CatchableError as exc:
+    result = false
   trace "Handles return", ma, result
 
 proc new*(T: typedesc[RelayTransport], cl: RelayClient, upgrader: Upgrade): T =

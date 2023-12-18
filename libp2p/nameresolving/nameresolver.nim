@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[sugar, sets, sequtils, strutils]
 import
@@ -55,7 +52,7 @@ proc resolveOneAddress(
   ma: MultiAddress,
   domain: Domain = Domain.AF_UNSPEC,
   prefix = ""): Future[seq[MultiAddress]]
-  {.async, raises: [Defect, MaError, TransportAddressError].} =
+  {.async, raises: [MaError, TransportAddressError].} =
   #Resolve a single address
   var pbuf: array[2, byte]
 
@@ -121,7 +118,7 @@ proc resolveMAddress*(
   if not DNS.matchPartial(address):
     res.incl(address)
   else:
-    let code = address[0].get().protoCode().get()
+    let code = address[0].tryGet().protoCode().tryGet()
     let seq = case code:
       of multiCodec("dns"):
         await self.resolveOneAddress(address)
@@ -132,7 +129,7 @@ proc resolveMAddress*(
       of multiCodec("dnsaddr"):
         await self.resolveDnsAddr(address)
       else:
-        doAssert false
+        assert false
         @[address]
     for ad in seq:
       res.incl(ad)

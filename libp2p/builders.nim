@@ -16,10 +16,7 @@ runnableExamples:
    # etc
    .build()
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import
   options, tables, chronos, chronicles, sequtils,
@@ -36,7 +33,7 @@ export
   switch, peerid, peerinfo, connection, multiaddress, crypto, errors
 
 type
-  TransportProvider* {.public.} = proc(upgr: Upgrade): Transport {.gcsafe, raises: [Defect].}
+  TransportProvider* {.public.} = proc(upgr: Upgrade): Transport {.gcsafe, raises: [].}
 
   SecureProtocol* {.pure.} = enum
     Noise,
@@ -57,7 +54,7 @@ type
     protoVersion: string
     agentVersion: string
     nameResolver: NameResolver
-    peerStoreCapacity: Option[int]
+    peerStoreCapacity: Opt[int]
     autonat: bool
     circuitRelay: Relay
     rdv: RendezVous
@@ -173,7 +170,7 @@ proc withMaxConnsPerPeer*(b: SwitchBuilder, maxConnsPerPeer: int): SwitchBuilder
   b
 
 proc withPeerStore*(b: SwitchBuilder, capacity: int): SwitchBuilder {.public.} =
-  b.peerStoreCapacity = some(capacity)
+  b.peerStoreCapacity = Opt.some(capacity)
   b
 
 proc withProtoVersion*(b: SwitchBuilder, protoVersion: string): SwitchBuilder {.public.} =
@@ -205,7 +202,7 @@ proc withServices*(b: SwitchBuilder, services: seq[Service]): SwitchBuilder =
   b
 
 proc build*(b: SwitchBuilder): Switch
-  {.raises: [Defect, LPError], public.} =
+  {.raises: [LPError], public.} =
 
   if b.rng == nil: # newRng could fail
     raise newException(Defect, "Cannot initialize RNG")
@@ -230,7 +227,7 @@ proc build*(b: SwitchBuilder): Switch
     identify = Identify.new(peerInfo, b.sendSignedPeerRecord)
     connManager = ConnManager.new(b.maxConnsPerPeer, b.maxConnections, b.maxIn, b.maxOut)
     ms = MultistreamSelect.new()
-    muxedUpgrade = MuxedUpgrade.new(b.muxers, secureManagerInstances, connManager, ms)
+    muxedUpgrade = MuxedUpgrade.new(b.muxers, secureManagerInstances, ms)
 
   let
     transports = block:
@@ -245,9 +242,9 @@ proc build*(b: SwitchBuilder): Switch
   if isNil(b.rng):
     b.rng = newRng()
 
-  let peerStore =
-    if isSome(b.peerStoreCapacity):
-      PeerStore.new(identify, b.peerStoreCapacity.get())
+  let peerStore = block:
+    b.peerStoreCapacity.withValue(capacity):
+      PeerStore.new(identify, capacity)
     else:
       PeerStore.new(identify)
 
@@ -296,7 +293,7 @@ proc newStandardSwitch*(
   nameResolver: NameResolver = nil,
   sendSignedPeerRecord = false,
   peerStoreCapacity = 1000): Switch
-  {.raises: [Defect, LPError], public.} =
+  {.raises: [LPError], public.} =
   ## Helper for common switch configurations.
   {.push warning[Deprecated]:off.}
   if SecureProtocol.Secio in secureManagers:
@@ -319,7 +316,7 @@ proc newStandardSwitch*(
     .withNameResolver(nameResolver)
     .withNoise()
 
-  if privKey.isSome():
-    b = b.withPrivateKey(privKey.get())
+  privKey.withValue(pkey):
+    b = b.withPrivateKey(pkey)
 
   b.build()

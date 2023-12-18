@@ -7,14 +7,12 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[sequtils, strutils, tables, hashes, options, sets, deques]
 import stew/results
 import chronos, chronicles, nimcrypto/sha2, metrics
+import chronos/ratelimit
 import rpc/[messages, message, protobuf],
        ../../peerid,
        ../../peerinfo,
@@ -23,7 +21,7 @@ import rpc/[messages, message, protobuf],
        ../../protobuf/minprotobuf,
        ../../utility
 
-export peerid, connection
+export peerid, connection, deques
 
 logScope:
   topics = "libp2p pubsubpeer"
@@ -35,9 +33,11 @@ when defined(libp2p_expensive_metrics):
   declareCounter(libp2p_pubsub_skipped_sent_messages, "number of sent skipped messages", labels = ["id"])
 
 type
+  PeerRateLimitError* = object of CatchableError
+
   PubSubObserver* = ref object
-    onRecv*: proc(peer: PubSubPeer; msgs: var RPCMsg) {.gcsafe, raises: [Defect].}
-    onSend*: proc(peer: PubSubPeer; msgs: var RPCMsg) {.gcsafe, raises: [Defect].}
+    onRecv*: proc(peer: PubSubPeer; msgs: var RPCMsg) {.gcsafe, raises: [].}
+    onSend*: proc(peer: PubSubPeer; msgs: var RPCMsg) {.gcsafe, raises: [].}
 
   PubSubPeerEventKind* {.pure.} = enum
     Connected
@@ -46,9 +46,9 @@ type
   PubSubPeerEvent* = object
     kind*: PubSubPeerEventKind
 
-  GetConn* = proc(): Future[Connection] {.gcsafe, raises: [Defect].}
-  DropConn* = proc(peer: PubSubPeer) {.gcsafe, raises: [Defect].} # have to pass peer as it's unknown during init
-  OnEvent* = proc(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [Defect].}
+  GetConn* = proc(): Future[Connection] {.gcsafe, raises: [].}
+  DropConn* = proc(peer: PubSubPeer) {.gcsafe, raises: [].} # have to pass peer as it's unknown during init
+  OnEvent* = proc(peer: PubSubPeer, event: PubSubPeerEvent) {.gcsafe, raises: [].}
 
   PubSubPeer* = ref object of RootObj
     getConn*: GetConn                   # callback to establish a new send connection
@@ -63,13 +63,16 @@ type
 
     score*: float64
     sentIHaves*: Deque[HashSet[MessageId]]
+    heDontWants*: Deque[HashSet[MessageId]]
     iHaveBudget*: int
+    pingBudget*: int
     maxMessageSize: int
     appScore*: float64 # application specific score
     behaviourPenalty*: float64 # the eventual penalty score
+    overheadRateLimitOpt*: Opt[TokenBucket]
 
-  RPCHandler* = proc(peer: PubSubPeer, msg: RPCMsg): Future[void]
-    {.gcsafe, raises: [Defect].}
+  RPCHandler* = proc(peer: PubSubPeer, data: seq[byte]): Future[void]
+    {.gcsafe, raises: [].}
 
 when defined(libp2p_agents_metrics):
   func shortAgent*(p: PubSubPeer): string =
@@ -108,7 +111,7 @@ func outbound*(p: PubSubPeer): bool =
   else:
     false
 
-proc recvObservers(p: PubSubPeer, msg: var RPCMsg) =
+proc recvObservers*(p: PubSubPeer, msg: var RPCMsg) =
   # trigger hooks
   if not(isNil(p.observers)) and p.observers[].len > 0:
     for obs in p.observers[]:
@@ -135,28 +138,19 @@ proc handle*(p: PubSubPeer, conn: Connection) {.async.} =
           conn, peer = p, closed = conn.closed,
           data = data.shortLog
 
-        var rmsg = decodeRpcMsg(data)
-        data = newSeq[byte]() # Release memory
-
-        if rmsg.isErr():
-          notice "failed to decode msg from peer",
-            conn, peer = p, closed = conn.closed,
-            err = rmsg.error()
-          break
-
-        trace "decoded msg from peer",
-          conn, peer = p, closed = conn.closed,
-          msg = rmsg.get().shortLog
-        # trigger hooks
-        p.recvObservers(rmsg.get())
-
         when defined(libp2p_expensive_metrics):
-          for m in rmsg.get().messages:
+          for m in rmsg.messages:
             for t in m.topicIDs:
               # metrics
               libp2p_pubsub_received_messages.inc(labelValues = [$p.peerId, t])
 
-        await p.handler(p, rmsg.get())
+        await p.handler(p, data)
+        data = newSeq[byte]() # Release memory
+    except PeerRateLimitError as exc:
+      debug "Peer rate limit exceeded, exiting read while", conn, peer = p, error = exc.msg
+    except CatchableError as exc:
+      debug "Exception occurred in PubSubPeer.handle",
+        conn, peer = p, closed = conn.closed, exc = exc.msg
     finally:
       await conn.close()
   except CancelledError:
@@ -174,7 +168,7 @@ proc connectOnce(p: PubSubPeer): Future[void] {.async.} =
   try:
     if p.connectedFut.finished:
       p.connectedFut = newFuture[void]()
-    let newConn = await p.getConn()
+    let newConn = await p.getConn().wait(5.seconds)
     if newConn.isNil:
       raise (ref LPError)(msg: "Cannot establish send connection")
 
@@ -200,6 +194,9 @@ proc connectOnce(p: PubSubPeer): Future[void] {.async.} =
       trace "Removing send connection", p, conn = p.sendConn
       await p.sendConn.close()
       p.sendConn = nil
+
+    if not p.connectedFut.finished:
+      p.connectedFut.complete()
 
     try:
       if p.onEvent != nil:
@@ -237,7 +234,7 @@ template sendMetrics(msg: RPCMsg): untyped =
         # metrics
         libp2p_pubsub_sent_messages.inc(labelValues = [$p.peerId, t])
 
-proc sendEncoded*(p: PubSubPeer, msg: seq[byte]) {.raises: [Defect], async.} =
+proc sendEncoded*(p: PubSubPeer, msg: seq[byte]) {.raises: [], async.} =
   doAssert(not isNil(p), "pubsubpeer nil!")
 
   if msg.len <= 0:
@@ -245,15 +242,17 @@ proc sendEncoded*(p: PubSubPeer, msg: seq[byte]) {.raises: [Defect], async.} =
     return
 
   if msg.len > p.maxMessageSize:
-    info "trying to send a too big for pubsub", maxSize=p.maxMessageSize, msgSize=msg.len
+    info "trying to send a msg too big for pubsub", maxSize=p.maxMessageSize, msgSize=msg.len
     return
 
   if p.sendConn == nil:
-    discard await p.connectedFut.withTimeout(1.seconds)
+    # Wait for a send conn to be setup. `connectOnce` will
+    # complete this even if the sendConn setup failed
+    await p.connectedFut
 
   var conn = p.sendConn
   if conn == nil or conn.closed():
-    debug "No send connection, skipping message", p, msg = shortLog(msg)
+    debug "No send connection", p, msg = shortLog(msg)
     return
 
   trace "sending encoded msgs to peer", conn, encoded = shortLog(msg)
@@ -270,9 +269,42 @@ proc sendEncoded*(p: PubSubPeer, msg: seq[byte]) {.raises: [Defect], async.} =
 
     await conn.close() # This will clean up the send connection
 
-proc send*(p: PubSubPeer, msg: RPCMsg, anonymize: bool) {.raises: [Defect].} =
-  trace "sending msg to peer", peer = p, rpcMsg = shortLog(msg)
+iterator splitRPCMsg(peer: PubSubPeer, rpcMsg: RPCMsg, maxSize: int, anonymize: bool): seq[byte] =
+  ## This iterator takes an `RPCMsg` and sequentially repackages its Messages into new `RPCMsg` instances.
+  ## Each new `RPCMsg` accumulates Messages until reaching the specified `maxSize`. If a single Message
+  ## exceeds the `maxSize` when trying to fit into an empty `RPCMsg`, the latter is skipped as too large to send.
+  ## Every constructed `RPCMsg` is then encoded, optionally anonymized, and yielded as a sequence of bytes.
 
+  var currentRPCMsg = rpcMsg
+  currentRPCMsg.messages = newSeq[Message]()
+
+  var currentSize = byteSize(currentRPCMsg)
+
+  for msg in rpcMsg.messages:
+    let msgSize = byteSize(msg)
+
+    # Check if adding the next message will exceed maxSize
+    if float(currentSize + msgSize) * 1.1 > float(maxSize): # Guessing 10% protobuf overhead
+      if currentRPCMsg.messages.len == 0:
+        trace "message too big to sent", peer, rpcMsg = shortLog(currentRPCMsg)
+        continue # Skip this message
+
+      trace "sending msg to peer", peer, rpcMsg = shortLog(currentRPCMsg)
+      yield encodeRpcMsg(currentRPCMsg, anonymize)
+      currentRPCMsg = RPCMsg()
+      currentSize = 0
+
+    currentRPCMsg.messages.add(msg)
+    currentSize += msgSize
+
+  # Check if there is a non-empty currentRPCMsg left to be added
+  if currentSize > 0 and currentRPCMsg.messages.len > 0:
+    trace "sending msg to peer", peer, rpcMsg = shortLog(currentRPCMsg)
+    yield encodeRpcMsg(currentRPCMsg, anonymize)
+  else:
+    trace "message too big to sent", peer, rpcMsg = shortLog(currentRPCMsg)
+
+proc send*(p: PubSubPeer, msg: RPCMsg, anonymize: bool) {.raises: [].} =
   # When sending messages, we take care to re-encode them with the right
   # anonymization flag to ensure that we're not penalized for sending invalid
   # or malicious data on the wire - in particular, re-encoding protects against
@@ -290,7 +322,13 @@ proc send*(p: PubSubPeer, msg: RPCMsg, anonymize: bool) {.raises: [Defect].} =
     sendMetrics(msg)
     encodeRpcMsg(msg, anonymize)
 
-  asyncSpawn p.sendEncoded(encoded)
+  if encoded.len > p.maxMessageSize and msg.messages.len > 1:
+    for encodedSplitMsg in splitRPCMsg(p, msg, p.maxMessageSize, anonymize):
+      asyncSpawn p.sendEncoded(encodedSplitMsg)
+  else:
+    # If the message size is within limits, send it as is
+    trace "sending msg to peer", peer = p, rpcMsg = shortLog(msg)
+    asyncSpawn p.sendEncoded(encoded)
 
 proc canAskIWant*(p: PubSubPeer, msgId: MessageId): bool =
   for sentIHave in p.sentIHaves.mitems():
@@ -305,7 +343,8 @@ proc new*(
   getConn: GetConn,
   onEvent: OnEvent,
   codec: string,
-  maxMessageSize: int): T =
+  maxMessageSize: int,
+  overheadRateLimitOpt: Opt[TokenBucket] = Opt.none(TokenBucket)): T =
 
   result = T(
     getConn: getConn,
@@ -313,6 +352,18 @@ proc new*(
     codec: codec,
     peerId: peerId,
     connectedFut: newFuture[void](),
-    maxMessageSize: maxMessageSize
+    maxMessageSize: maxMessageSize,
+    overheadRateLimitOpt: overheadRateLimitOpt
   )
   result.sentIHaves.addFirst(default(HashSet[MessageId]))
+  result.heDontWants.addFirst(default(HashSet[MessageId]))
+
+proc getAgent*(peer: PubSubPeer): string =
+  return
+    when defined(libp2p_agents_metrics):
+      if peer.shortAgent.len > 0:
+        peer.shortAgent
+      else:
+        "unknown"
+    else:
+      "unknown"

@@ -9,10 +9,7 @@
 
 ## This module implementes API for libp2p peer.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 {.push public.}
 
 import
@@ -44,10 +41,7 @@ func shortLog*(pid: PeerId): string =
   if len(spid) > 10:
     spid[3] = '*'
 
-    when (NimMajor, NimMinor) > (1, 4):
-      spid.delete(4 .. spid.high - 6)
-    else:
-      spid.delete(4, spid.high - 6)
+    spid.delete(4 .. spid.high - 6)
 
   spid
 
@@ -191,19 +185,11 @@ proc random*(t: typedesc[PeerId], rng = newRng()): Result[PeerId, cstring] =
 
 func match*(pid: PeerId, pubkey: PublicKey): bool =
   ## Returns ``true`` if ``pid`` matches public key ``pubkey``.
-  let p = PeerId.init(pubkey)
-  if p.isErr:
-    false
-  else:
-    pid == p.get()
+  PeerId.init(pubkey) == Result[PeerId, cstring].ok(pid)
 
 func match*(pid: PeerId, seckey: PrivateKey): bool =
   ## Returns ``true`` if ``pid`` matches private key ``seckey``.
-  let p = PeerId.init(seckey)
-  if p.isErr:
-    false
-  else:
-    pid == p.get()
+  PeerId.init(seckey) == Result[PeerId, cstring].ok(pid)
 
 ## Serialization/Deserialization helpers
 

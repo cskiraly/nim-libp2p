@@ -7,15 +7,9 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
-
-import options
+{.push raises: [].}
 
 import chronos, chronicles
-
 import ./messages,
        ../../../stream/connection
 
@@ -30,21 +24,21 @@ const
 proc sendStatus*(conn: Connection, code: StatusV1) {.async, gcsafe.} =
   trace "send relay/v1 status", status = $code & "(" & $ord(code) & ")"
   let
-    msg = RelayMessage(msgType: some(RelayType.Status), status: some(code))
+    msg = RelayMessage(msgType: Opt.some(RelayType.Status), status: Opt.some(code))
     pb = encode(msg)
   await conn.writeLp(pb.buffer)
 
 proc sendHopStatus*(conn: Connection, code: StatusV2) {.async, gcsafe.} =
   trace "send hop relay/v2 status", status = $code & "(" & $ord(code) & ")"
   let
-    msg = HopMessage(msgType: HopMessageType.Status, status: some(code))
+    msg = HopMessage(msgType: HopMessageType.Status, status: Opt.some(code))
     pb = encode(msg)
   await conn.writeLp(pb.buffer)
 
 proc sendStopStatus*(conn: Connection, code: StatusV2) {.async.} =
   trace "send stop relay/v2 status", status = $code & " (" & $ord(code) & ")"
   let
-    msg = StopMessage(msgType: StopMessageType.Status, status: some(code))
+    msg = StopMessage(msgType: StopMessageType.Status, status: Opt.some(code))
     pb = encode(msg)
   await conn.writeLp(pb.buffer)
 

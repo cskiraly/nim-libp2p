@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[oids, strformat]
 import bearssl/rand
@@ -262,7 +259,7 @@ proc newSecioConn(conn: Connection,
                   secrets: Secret,
                   order: int,
                   remotePubKey: PublicKey): SecioConn
-                  {.raises: [Defect, LPError].} =
+                  {.raises: [LPError].} =
   ## Create new secure stream/lpstream, using specified hash algorithm ``hash``,
   ## cipher algorithm ``cipher``, stretched keys ``secrets`` and order
   ## ``order``.
@@ -342,8 +339,7 @@ method handshake*(s: Secio, conn: Connection, initiator: bool, peerId: Opt[PeerI
 
   remotePeerId = PeerId.init(remotePubkey).tryGet()
 
-  if peerId.isSome():
-    let targetPid = peerId.get()
+  peerId.withValue(targetPid):
     if not targetPid.validate():
       raise newException(SecioError, "Failed to validate expected peerId.")
 
@@ -439,14 +435,10 @@ proc new*(
   T: typedesc[Secio],
   rng: ref HmacDrbgContext,
   localPrivateKey: PrivateKey): T =
-  let pkRes = localPrivateKey.getPublicKey()
-  if pkRes.isErr:
-    raise newException(Defect, "Invalid private key")
-
   let secio = Secio(
     rng: rng,
     localPrivateKey: localPrivateKey,
-    localPublicKey: pkRes.get(),
+    localPublicKey: localPrivateKey.getPublicKey().expect("Invalid private key"),
   )
   secio.init()
   secio

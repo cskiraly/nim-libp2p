@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/sequtils
 import pkg/[chronos, chronicles, metrics]
@@ -94,17 +91,15 @@ proc new*(
   T: type MuxedUpgrade,
   muxers: seq[MuxerProvider],
   secureManagers: openArray[Secure] = [],
-  connManager: ConnManager,
   ms: MultistreamSelect): T =
 
   let upgrader = T(
     muxers: muxers,
     secureManagers: @secureManagers,
-    connManager: connManager,
     ms: ms)
 
   upgrader.streamHandler = proc(conn: Connection)
-    {.async, gcsafe, raises: [Defect].} =
+    {.async, gcsafe, raises: [].} =
     trace "Starting stream handler", conn
     try:
       await upgrader.ms.handle(conn) # handle incoming connection

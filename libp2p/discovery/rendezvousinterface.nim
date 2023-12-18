@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import chronos
 import ./discoverymngr,
@@ -22,6 +19,7 @@ type
     rdv*: RendezVous
     timeToRequest: Duration
     timeToAdvertise: Duration
+    ttl: Duration
 
   RdvNamespace* = distinct string
 
@@ -65,12 +63,16 @@ method advertise*(self: RendezVousInterface) {.async.} =
 
     self.advertisementUpdated.clear()
     for toAdv in toAdvertise:
-      await self.rdv.advertise(toAdv, self.timeToAdvertise)
+      try:
+        await self.rdv.advertise(toAdv, self.ttl)
+      except CatchableError as error:
+        debug "RendezVous advertise error: ", msg = error.msg
 
     await sleepAsync(self.timeToAdvertise) or self.advertisementUpdated.wait()
 
 proc new*(T: typedesc[RendezVousInterface],
           rdv: RendezVous,
           ttr: Duration = 1.minutes,
-          tta: Duration = MinimumDuration): RendezVousInterface =
-  T(rdv: rdv, timeToRequest: ttr, timeToAdvertise: tta)
+          tta: Duration = 1.minutes,
+          ttl: Duration = MinimumDuration): RendezVousInterface =
+  T(rdv: rdv, timeToRequest: ttr, timeToAdvertise: tta, ttl: ttl)

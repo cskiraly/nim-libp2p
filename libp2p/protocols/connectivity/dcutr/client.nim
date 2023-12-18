@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/sequtils
 
@@ -84,8 +81,8 @@ proc startSync*(self: DcutrClient, switch: Switch, remotePeerId: PeerId, addrs: 
     debug "Dcutr initiator could not connect to the remote peer, all connect attempts timed out", peerDialableAddrs, msg = err.msg
     raise newException(DcutrError, "Dcutr initiator could not connect to the remote peer, all connect attempts timed out", err)
   except CatchableError as err:
-    debug "Unexpected error when trying direct conn", err = err.msg
-    raise newException(DcutrError, "Unexpected error when trying a direct conn", err)
+    debug "Unexpected error when Dcutr initiator tried to connect to the remote peer", err = err.msg
+    raise newException(DcutrError, "Unexpected error when Dcutr initiator tried to connect to the remote peer", err)
   finally:
     if stream != nil:
       await stream.close()

@@ -7,10 +7,7 @@
 # This file may not be copied, modified, or distributed except according to
 # those terms.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[tables, sequtils, sets, algorithm, deques]
 import chronos, chronicles, metrics
@@ -33,7 +30,7 @@ declareGauge(libp2p_gossipsub_healthy_peers_topics, "number of topics in mesh wi
 declareCounter(libp2p_gossipsub_above_dhigh_condition, "number of above dhigh pruning branches ran", labels = ["topic"])
 declareGauge(libp2p_gossipsub_received_iwants, "received iwants", labels = ["kind"])
 
-proc grafted*(g: GossipSub, p: PubSubPeer, topic: string) {.raises: [Defect].} =
+proc grafted*(g: GossipSub, p: PubSubPeer, topic: string) {.raises: [].} =
   g.withPeerStats(p.peerId) do (stats: var PeerStats):
     var info = stats.topicInfos.getOrDefault(topic)
     info.graftTime = Moment.now()
@@ -49,12 +46,10 @@ proc pruned*(g: GossipSub,
              p: PubSubPeer,
              topic: string,
              setBackoff: bool = true,
-             backoff = none(Duration)) {.raises: [Defect].} =
+             backoff = none(Duration)) {.raises: [].} =
   if setBackoff:
     let
-      backoffDuration =
-        if isSome(backoff): backoff.get()
-        else: g.parameters.pruneBackoff
+      backoffDuration = backoff.get(g.parameters.pruneBackoff)
       backoffMoment = Moment.fromNow(backoffDuration)
 
     g.backingOff
@@ -75,7 +70,7 @@ proc pruned*(g: GossipSub,
 
       trace "pruned", peer=p, topic
 
-proc handleBackingOff*(t: var BackoffTable, topic: string) {.raises: [Defect].} =
+proc handleBackingOff*(t: var BackoffTable, topic: string) {.raises: [].} =
   let now = Moment.now()
   var expired = toSeq(t.getOrDefault(topic).pairs())
   expired.keepIf do (pair: tuple[peer: PeerId, expire: Moment]) -> bool:
@@ -84,7 +79,7 @@ proc handleBackingOff*(t: var BackoffTable, topic: string) {.raises: [Defect].} 
     t.withValue(topic, v):
       v[].del(peer)
 
-proc peerExchangeList*(g: GossipSub, topic: string): seq[PeerInfoMsg] {.raises: [Defect].} =
+proc peerExchangeList*(g: GossipSub, topic: string): seq[PeerInfoMsg] {.raises: [].} =
   if not g.parameters.enablePX:
     return @[]
   var peers = g.gossipsub.getOrDefault(topic, initHashSet[PubSubPeer]()).toSeq()
@@ -111,10 +106,11 @@ proc handleGraft*(g: GossipSub,
     let topic = graft.topicId
     trace "peer grafted topic", peer, topic
 
-    # It is an error to GRAFT on a explicit peer
+    # It is an error to GRAFT on a direct peer
     if peer.peerId in g.parameters.directPeers:
       # receiving a graft from a direct peer should yield a more prominent warning (protocol violation)
-      warn "an explicit peer attempted to graft us, peering agreements should be reciprocal",
+      # we are trusting direct peer not to abuse this
+      warn "a direct peer attempted to graft us, peering agreements should be reciprocal",
         peer, topic
       # and such an attempt should be logged and rejected with a PRUNE
       prunes.add(ControlPrune(
@@ -194,27 +190,22 @@ proc handleGraft*(g: GossipSub,
 proc getPeers(prune: ControlPrune, peer: PubSubPeer): seq[(PeerId, Option[PeerRecord])] =
   var routingRecords: seq[(PeerId, Option[PeerRecord])]
   for record in prune.peers:
-    let peerRecord =
-      if record.signedPeerRecord.len == 0:
-        none(PeerRecord)
-      else:
-        let signedRecord = SignedPeerRecord.decode(record.signedPeerRecord)
-        if signedRecord.isErr:
-          trace "peer sent invalid SPR", peer, error=signedRecord.error
-          none(PeerRecord)
+    var peerRecord = none(PeerRecord)
+    if record.signedPeerRecord.len > 0:
+      SignedPeerRecord.decode(record.signedPeerRecord).toOpt().withValue(spr):
+        if record.peerId != spr.data.peerId:
+          trace "peer sent envelope with wrong public key", peer
         else:
-          if record.peerId != signedRecord.get().data.peerId:
-            trace "peer sent envelope with wrong public key", peer
-            none(PeerRecord)
-          else:
-            some(signedRecord.get().data)
+          peerRecord = some(spr.data)
+      else:
+        trace "peer sent invalid SPR", peer
 
     routingRecords.add((record.peerId, peerRecord))
 
   routingRecords
 
 
-proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) {.raises: [Defect].} =
+proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) {.raises: [].} =
   for prune in prunes:
     let topic = prune.topicId
 
@@ -248,39 +239,42 @@ proc handlePrune*(g: GossipSub, peer: PubSubPeer, prunes: seq[ControlPrune]) {.r
 
 proc handleIHave*(g: GossipSub,
                  peer: PubSubPeer,
-                 ihaves: seq[ControlIHave]): ControlIWant {.raises: [Defect].} =
+                 ihaves: seq[ControlIHave]): ControlIWant {.raises: [].} =
   var res: ControlIWant
   if peer.score < g.parameters.gossipThreshold:
     trace "ihave: ignoring low score peer", peer, score = peer.score
   elif peer.iHaveBudget <= 0:
     trace "ihave: ignoring out of budget peer", peer, score = peer.score
   else:
-    # TODO review deduplicate algorithm
-    # * https://github.com/nim-lang/Nim/blob/5f46474555ee93306cce55342e81130c1da79a42/lib/pure/collections/sequtils.nim#L184
-    # * it's probably not efficient and might give preference to the first dupe
-    let deIhaves = ihaves.deduplicate()
-    for ihave in deIhaves:
+    for ihave in ihaves:
       trace "peer sent ihave",
         peer, topic = ihave.topicId, msgs = ihave.messageIds
-      if ihave.topicId in g.mesh:
-        # also avoid duplicates here!
-        let deIhavesMsgs = ihave.messageIds.deduplicate()
-        for msgId in deIhavesMsgs:
+      if ihave.topicId in g.topics:
+        for msgId in ihave.messageIds:
           if not g.hasSeen(msgId):
-            if peer.iHaveBudget > 0:
+            if peer.iHaveBudget <= 0:
+              break
+            elif msgId notin res.messageIds:
               res.messageIds.add(msgId)
               dec peer.iHaveBudget
               trace "requested message via ihave", messageID=msgId
-            else:
-              break
     # shuffling res.messageIDs before sending it out to increase the likelihood
     # of getting an answer if the peer truncates the list due to internal size restrictions.
     g.rng.shuffle(res.messageIds)
     return res
 
+proc handleIDontWant*(g: GossipSub,
+                      peer: PubSubPeer,
+                      iDontWants: seq[ControlIWant]) =
+  for dontWant in iDontWants:
+    for messageId in dontWant.messageIds:
+      if peer.heDontWants[^1].len > 1000: break
+      if messageId.len > 100: continue
+      peer.heDontWants[^1].incl(messageId)
+
 proc handleIWant*(g: GossipSub,
                  peer: PubSubPeer,
-                 iwants: seq[ControlIWant]): seq[Message] {.raises: [Defect].} =
+                 iwants: seq[ControlIWant]): seq[Message] {.raises: [].} =
   var
     messages: seq[Message]
     invalidRequests = 0
@@ -299,15 +293,14 @@ proc handleIWant*(g: GossipSub,
             libp2p_gossipsub_received_iwants.inc(1, labelValues=["skipped"])
             return messages
           continue
-        let msg = g.mcache.get(mid)
-        if msg.isSome:
-          libp2p_gossipsub_received_iwants.inc(1, labelValues=["correct"])
-          messages.add(msg.get())
-        else:
+        let msg = g.mcache.get(mid).valueOr:
           libp2p_gossipsub_received_iwants.inc(1, labelValues=["unknown"])
+          continue
+        libp2p_gossipsub_received_iwants.inc(1, labelValues=["correct"])
+        messages.add(msg)
   return messages
 
-proc commitMetrics(metrics: var MeshMetrics) {.raises: [Defect].} =
+proc commitMetrics(metrics: var MeshMetrics) {.raises: [].} =
   libp2p_gossipsub_low_peers_topics.set(metrics.lowPeersTopics)
   libp2p_gossipsub_no_peers_topics.set(metrics.noPeersTopics)
   libp2p_gossipsub_under_dout_topics.set(metrics.underDoutTopics)
@@ -316,7 +309,7 @@ proc commitMetrics(metrics: var MeshMetrics) {.raises: [Defect].} =
   libp2p_gossipsub_peers_per_topic_fanout.set(metrics.otherPeersPerTopicFanout, labelValues = ["other"])
   libp2p_gossipsub_peers_per_topic_mesh.set(metrics.otherPeersPerTopicMesh, labelValues = ["other"])
 
-proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil) {.raises: [Defect].} =
+proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil) {.raises: [].} =
   logScope:
     topic
     mesh = g.mesh.peers(topic)
@@ -348,7 +341,7 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
             # avoid negative score peers
             it.score >= 0.0 and
             it notin currentMesh[] and
-            # don't pick explicit peers
+            # don't pick direct peers
             it.peerId notin g.parameters.directPeers and
             # and avoid peers we are backing off
             it.peerId notin backingOff:
@@ -388,7 +381,7 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
             it notin currentMesh[] and
             # avoid negative score peers
             it.score >= 0.0 and
-            # don't pick explicit peers
+            # don't pick direct peers
             it.peerId notin g.parameters.directPeers and
             # and avoid peers we are backing off
             it.peerId notin backingOff:
@@ -490,7 +483,7 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
               # avoid negative score peers
               it.score >= median.score and
               it notin currentMesh[] and
-              # don't pick explicit peers
+              # don't pick direct peers
               it.peerId notin g.parameters.directPeers and
               # and avoid peers we are backing off
               it.peerId notin backingOff:
@@ -546,7 +539,7 @@ proc rebalanceMesh*(g: GossipSub, topic: string, metrics: ptr MeshMetrics = nil)
         backoff: g.parameters.pruneBackoff.seconds.uint64)])))
     g.broadcast(prunes, prune)
 
-proc dropFanoutPeers*(g: GossipSub) {.raises: [Defect].} =
+proc dropFanoutPeers*(g: GossipSub) {.raises: [].} =
   # drop peers that we haven't published to in
   # GossipSubFanoutTTL seconds
   let now = Moment.now()
@@ -559,13 +552,13 @@ proc dropFanoutPeers*(g: GossipSub) {.raises: [Defect].} =
   for topic in drops:
     g.lastFanoutPubSub.del topic
 
-proc replenishFanout*(g: GossipSub, topic: string) {.raises: [Defect].} =
+proc replenishFanout*(g: GossipSub, topic: string) {.raises: [].} =
   ## get fanout peers for a topic
   logScope: topic
   trace "about to replenish fanout"
 
-  let currentMesh = g.mesh.getOrDefault(topic)
   if g.fanout.peers(topic) < g.parameters.dLow:
+    let currentMesh = g.mesh.getOrDefault(topic)
     trace "replenishing fanout", peers = g.fanout.peers(topic)
     for peer in g.gossipsub.getOrDefault(topic):
       if peer in currentMesh: continue
@@ -575,7 +568,7 @@ proc replenishFanout*(g: GossipSub, topic: string) {.raises: [Defect].} =
 
   trace "fanout replenished with peers", peers = g.fanout.peers(topic)
 
-proc getGossipPeers*(g: GossipSub): Table[PubSubPeer, ControlMessage] {.raises: [Defect].} =
+proc getGossipPeers*(g: GossipSub): Table[PubSubPeer, ControlMessage] {.raises: [].} =
   ## gossip iHave messages to peers
   ##
 
@@ -638,7 +631,7 @@ proc getGossipPeers*(g: GossipSub): Table[PubSubPeer, ControlMessage] {.raises: 
 
   return control
 
-proc onHeartbeat(g: GossipSub) {.raises: [Defect].} =
+proc onHeartbeat(g: GossipSub) {.raises: [].} =
     # reset IWANT budget
     # reset IHAVE cap
     block:
@@ -646,7 +639,11 @@ proc onHeartbeat(g: GossipSub) {.raises: [Defect].} =
         peer.sentIHaves.addFirst(default(HashSet[MessageId]))
         if peer.sentIHaves.len > g.parameters.historyLength:
           discard peer.sentIHaves.popLast()
+        peer.heDontWants.addFirst(default(HashSet[MessageId]))
+        if peer.heDontWants.len > g.parameters.historyLength:
+          discard peer.heDontWants.popLast()
         peer.iHaveBudget = IHavePeerBudget
+        peer.pingBudget = PingsPeerBudget
 
     var meshMetrics = MeshMetrics()
 
@@ -698,7 +695,7 @@ proc onHeartbeat(g: GossipSub) {.raises: [Defect].} =
 
     g.mcache.shift() # shift the cache
 
-# {.pop.} # raises [Defect]
+# {.pop.} # raises []
 
 proc heartbeat*(g: GossipSub) {.async.} =
   heartbeat "GossipSub", g.parameters.heartbeatInterval:

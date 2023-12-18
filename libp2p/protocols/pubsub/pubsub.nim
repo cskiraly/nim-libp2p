@@ -13,13 +13,11 @@
 ## `publish<#publish.e%2CPubSub%2Cstring%2Cseq%5Bbyte%5D>`_ something on it,
 ## and eventually `unsubscribe<#unsubscribe%2CPubSub%2Cstring%2CTopicHandler>`_ from it.
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import std/[tables, sequtils, sets, strutils]
 import chronos, chronicles, metrics
+import chronos/ratelimit
 import ./errors as pubsub_errors,
        ./pubsubpeer,
        ./rpc/[message, messages, protobuf],
@@ -86,18 +84,18 @@ type
   InitializationError* = object of LPError
 
   TopicHandler* {.public.} = proc(topic: string,
-                       data: seq[byte]): Future[void] {.gcsafe, raises: [Defect].}
+                       data: seq[byte]): Future[void] {.gcsafe, raises: [].}
 
   ValidatorHandler* {.public.} = proc(topic: string,
-                           message: Message): Future[ValidationResult] {.gcsafe, raises: [Defect].}
+                           message: Message): Future[ValidationResult] {.gcsafe, raises: [].}
 
   TopicPair* = tuple[topic: string, handler: TopicHandler]
 
   MsgIdProvider* {.public.} =
-    proc(m: Message): Result[MessageId, ValidationResult] {.noSideEffect, raises: [Defect], gcsafe.}
+    proc(m: Message): Result[MessageId, ValidationResult] {.noSideEffect, raises: [], gcsafe.}
 
   SubscriptionValidator* {.public.} =
-    proc(topic: string): bool {.raises: [Defect], gcsafe.}
+    proc(topic: string): bool {.raises: [], gcsafe.}
     ## Every time a peer send us a subscription (even to an unknown topic),
     ## we have to store it, which may be an attack vector.
     ## This callback can be used to reject topic we're not interested in
@@ -140,7 +138,7 @@ method unsubscribePeer*(p: PubSub, peerId: PeerId) {.base, gcsafe.} =
 
   libp2p_pubsub_peers.set(p.peers.len.int64)
 
-proc send*(p: PubSub, peer: PubSubPeer, msg: RPCMsg) {.raises: [Defect].} =
+proc send*(p: PubSub, peer: PubSubPeer, msg: RPCMsg) {.raises: [].} =
   ## Attempt to send `msg` to remote peer
   ##
 
@@ -150,7 +148,7 @@ proc send*(p: PubSub, peer: PubSubPeer, msg: RPCMsg) {.raises: [Defect].} =
 proc broadcast*(
   p: PubSub,
   sendPeers: auto, # Iteratble[PubSubPeer]
-  msg: RPCMsg) {.raises: [Defect].} =
+  msg: RPCMsg) {.raises: [].} =
   ## Attempt to send `msg` to the given peers
 
   let npeers = sendPeers.len.int64
@@ -173,10 +171,9 @@ proc broadcast*(
       else:
         libp2p_pubsub_broadcast_messages.inc(npeers, labelValues = ["generic"])
 
-  if msg.control.isSome():
-    libp2p_pubsub_broadcast_iwant.inc(npeers * msg.control.get().iwant.len.int64)
+  msg.control.withValue(control):
+    libp2p_pubsub_broadcast_iwant.inc(npeers * control.iwant.len.int64)
 
-    let control = msg.control.get()
     for ihave in control.ihave:
       if p.knownTopics.contains(ihave.topicId):
         libp2p_pubsub_broadcast_ihave.inc(npeers, labelValues = [ihave.topicId])
@@ -247,9 +244,8 @@ proc updateMetrics*(p: PubSub, rpcMsg: RPCMsg) =
       else:
         libp2p_pubsub_received_messages.inc(labelValues = ["generic"])
 
-  if rpcMsg.control.isSome():
-    libp2p_pubsub_received_iwant.inc(rpcMsg.control.get().iwant.len.int64)
-    template control: untyped = rpcMsg.control.unsafeGet()
+  rpcMsg.control.withValue(control):
+    libp2p_pubsub_received_iwant.inc(control.iwant.len.int64)
     for ihave in control.ihave:
       if p.knownTopics.contains(ihave.topicId):
         libp2p_pubsub_received_ihave.inc(labelValues = [ihave.topicId])
@@ -268,7 +264,7 @@ proc updateMetrics*(p: PubSub, rpcMsg: RPCMsg) =
 
 method rpcHandler*(p: PubSub,
                    peer: PubSubPeer,
-                   rpcMsg: RPCMsg): Future[void] {.base, async.} =
+                   data: seq[byte]): Future[void] {.base, async.} =
   ## Handler that must be overridden by concrete implementation
   raiseAssert "Unimplemented"
 
@@ -283,10 +279,11 @@ method onPubSubPeerEvent*(p: PubSub, peer: PubSubPeer, event: PubSubPeerEvent) {
   of PubSubPeerEventKind.Disconnected:
     discard
 
-proc getOrCreatePeer*(
+method getOrCreatePeer*(
     p: PubSub,
     peerId: PeerId,
-    protos: seq[string]): PubSubPeer =
+    protos: seq[string]): PubSubPeer {.base, gcsafe.} =
+
   p.peers.withValue(peerId, peer):
     return peer[]
 
@@ -359,9 +356,9 @@ method handleConn*(p: PubSub,
   ##    that we're interested in
   ##
 
-  proc handler(peer: PubSubPeer, msg: RPCMsg): Future[void] =
+  proc handler(peer: PubSubPeer, data: seq[byte]): Future[void] =
     # call pubsub rpc handler
-    p.rpcHandler(peer, msg)
+    p.rpcHandler(peer, data)
 
   let peer = p.getOrCreatePeer(conn.peerId, @[proto])
 
@@ -491,7 +488,7 @@ method publish*(p: PubSub,
   return 0
 
 method initPubSub*(p: PubSub)
-  {.base, raises: [Defect, InitializationError].} =
+  {.base, raises: [InitializationError].} =
   ## perform pubsub initialization
   p.observers = new(seq[PubSubObserver])
   if p.msgIdProvider == nil:
@@ -559,7 +556,7 @@ proc init*[PubParams: object | bool](
   maxMessageSize: int = 1024 * 1024,
   rng: ref HmacDrbgContext = newRng(),
   parameters: PubParams = false): P
-  {.raises: [Defect, InitializationError], public.} =
+  {.raises: [InitializationError], public.} =
   let pubsub =
     when PubParams is bool:
       P(switch: switch,

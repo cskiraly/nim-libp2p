@@ -9,10 +9,7 @@
 
 ## This module implementes CID (Content IDentifier).
 
-when (NimMajor, NimMinor) < (1, 4):
-  {.push raises: [Defect].}
-else:
-  {.push raises: [].}
+{.push raises: [].}
 
 import tables, hashes
 import multibase, multicodec, multihash, vbuffer, varint
@@ -279,9 +276,6 @@ proc `$`*(cid: Cid): string =
     BTCBase58.encode(cid.data.buffer)
   elif cid.cidver == CIDv1:
     let res = MultiBase.encode("base58btc", cid.data.buffer)
-    if res.isOk():
-      res.get()
-    else:
-      ""
+    res.get("")
   else:
     ""
