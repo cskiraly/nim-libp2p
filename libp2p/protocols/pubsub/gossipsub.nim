@@ -564,7 +564,9 @@ method onTopicSubscription*(g: GossipSub, topic: string, subscribed: bool) =
 
 method publish*(g: GossipSub,
                 topic: string,
-                data: seq[byte]): Future[int] {.async.} =
+                data: seq[byte],
+                maxCopies: int = int.high,
+                shuffleDests = false): Future[int] {.async.} =
   # base returns always 0
   discard await procCall PubSub(g).publish(topic, data)
 
@@ -655,7 +657,10 @@ method publish*(g: GossipSub,
 
   g.mcache.put(msgId, msg)
 
-  g.broadcast(peers, RPCMsg(messages: @[msg]))
+  var dsts = sequtils.toSeq(peers.items)
+  if shuffleDests:
+    g.rng.shuffle(dsts)
+  g.broadcast(dsts[0..<min(maxCopies, dsts.len)], RPCMsg(messages: @[msg]))
 
   if g.knownTopics.contains(topic):
     libp2p_pubsub_messages_published.inc(peers.len.int64, labelValues = [topic])
